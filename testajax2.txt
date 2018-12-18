@@ -1,0 +1,260 @@
+
+Skip to content
+
+    Pull requests
+    Issues
+    Marketplace
+    Explore
+
+    @sivagoud00
+
+5
+0
+
+    0
+
+c4eitteam/bak5.c4elink.org Private
+Code
+Issues 0
+Pull requests 0
+Projects 0
+Wiki
+Insights
+bak5.c4elink.org/blocks/questionpool/ajax.php
+cf1b8c8 on Oct 27
+@rickyamamoto rickyamamoto /var/www/html complete-initial
+237 lines (204 sloc) 10.8 KB
+ <?php
+define('AJAX_SCRIPT', true);
+define('COUNT','count');
+define('FILTERCOUNT','filter_count');
+require_once(dirname(__FILE__) . '/../../config.php');
+  
+global $DB, $PAGE, $USER, $CFG, $OUTPUT,$COURSE;
+require_once($CFG->dirroot.'/blocks/questionpool/lib.php');
+$action = optional_param('action','',PARAM_TEXT);
+$filter = optional_param('filter','',PARAM_RAW);
+$filter_data = json_decode($filter);
+$poolid = optional_param('pool','',PARAM_INT);
+$is_manager = optional_param('manager',0,PARAM_INT);
+$context = context_system::instance();
+$PAGE->set_context($context);
+$questionpool = new questionpool();
+$sort = 'lastaccess';
+$dir = "ASC";
+$requestData = $_REQUEST;
+$requestDatacount=array();
+$returnurl = new moodle_url('/blocks/questionpool/index.php');
+$editquestionurl = new \moodle_url('/question/question.php',
+        array('returnurl' => $returnurl, 'courseid'=>$COURSE->id));
+$data = array();
+if($action == 'templatepool' || $filter_data){  
+    $total_pools = count($questionpool->categories(false,true,$requestData,COUNT,$filter_data));  
+    // for duplicate question case
+    $duplicatedpools = $questionpool->categories(false,true,$requestData,COUNT,$filter_data);
+    foreach($duplicatedpools as $dp){
+        //Showing duplicate function for the each category
+          $duplicate_sql = '  SELECT id, COUNT(*) AS dup
+                                FROM {question}
+                               WHERE category = :catid
+                                 AND hidden = 0
+                                 AND name NOT LIKE "Random%"
+                            GROUP BY name
+                              HAVING COUNT(*) > 1
+                            ORDER BY dup DESC';
+                       $duplicates_exist = $DB->get_records_sql($duplicate_sql, array('catid' => $dp->id));
+                        
+          $duplicate_sql1 = 'SELECT q.id
+                                FROM {question} AS q
+                               WHERE q.category = :catid1
+                                 AND q.hidden = 0
+                                 AND q.name NOT LIKE "Random%"
+                                 AND q.name LIKE "%:"
+                                 AND q.id NOT IN (
+                              SELECT GROUP_CONCAT(id) 
+                                FROM {question}
+                               WHERE category = :catid2
+                                 AND hidden = 0
+                                 AND name NOT LIKE "Random%"
+                            GROUP BY name
+                              HAVING COUNT(*) > 1
+                     )
+                     ';
+          $duplicates = $DB->get_records_sql($duplicate_sql, array('catid' => $dp->id));
+          $duplicates1 = $DB->get_records_sql($duplicate_sql1, array('catid1' => $dp->id,'catid2' => $dp->id));
+          $duplicatedcount = 0;
+          if ($duplicates) {
+              $qcountrec = 0;
+              foreach ($duplicates as $dupvalue) {
+                  $qcountrec += $dupvalue->dup;
+              }
+              $duplicatedcount = $qcountrec - count($duplicates);
+          } 
+          $duplicatedcount = $duplicatedcount + count($duplicates1);
+          if($duplicatedcount){
+            if($dp)
+             $update = "UPDATE {block_qp} set duplicated = {$duplicatedcount} WHERE
+                                  poolid =".$dp->id;
+             $up_ex = $DB->execute($update);
+          }
+    }
+    $pools = $questionpool->categories(false,true,$requestData,null,$filter_data);
+}else if($action == 'myownpool'){
+    $pools = $questionpool->my_own_pools($requestData,null);
+    $total_pools = count($questionpool->my_own_pools($requestData,COUNT));
+}else if($action == 'questionreport'){
+    $results = $questionpool->attempts_pools($poolid,$requestData,null);
+    $total_pools = count($questionpool->attempts_pools($poolid,$requestData,COUNT));
+    if(empty($results)){
+        return get_string('norecordsfound', 'block_questionpool');
+    }
+    foreach($results as $result) {
+          $out = array();
+          $out[] = $result->name;
+          $out[] = $result->third_condition;
+        if($result->fourth_condition!=''){
+          $out[] = $result->fourth_condition;
+        }else{
+          $out[]=0;
+        }
+        if($result->first_condition!=''){
+          $out[] = $result->first_condition;
+        }else{
+          $out[]=0;
+        }
+        if($result->second_condition!=''){
+          $out[] = $result->second_condition;
+        }else{
+          $out[]=0;
+        }
+        $data[] = $out;
+   }
+    $iTotal = $total_pools;
+    $iFilteredTotal = $iTotal;
+    $output = array(
+        "sEcho" => intval($requestData['sEcho']),
+        "iTotalRecords" => $iTotal,
+        "iTotalDisplayRecords" => $iFilteredTotal,
+        "aaData" => $data
+      );
+    echo json_encode($output);
+    die();
+}
+foreach($pools as $pool){
+    if($pool->visible){
+        $src = $OUTPUT->image_url('i/grade_correct');
+        $title = 'Active';
+    } else {
+        $src = $OUTPUT->image_url('i/grade_incorrect');
+        $title = 'Inactive';
+    }
+    
+    $row = array();
+    $row[] = $pool->id;
+    $row[] = $pool->name;
+    if(((has_capability('block/questionpool:access', $context) && !is_siteadmin())) or ($is_manager)){
+        $row[] = $DB->get_field('block_qp_category', 'fullname', array('id'=>$pool->categoryid));
+    }else{
+        $row[] = $DB->get_field('course','fullname',array('id'=>$pool->courseid));
+    }
+    
+    $questioncount = $DB->count_records('question', array('category'=>$pool->id, 'parent' => 0));
+    if(((has_capability('block/questionpool:access', $context) && !is_siteadmin())) or ($is_manager)){
+       $courseid = $DB->get_field('block_qp','courseid',array('poolid'=>$pool->id));
+       $row[] = html_writer::tag('a', $questioncount, array('href'=>$CFG->wwwroot.'/question/edit.php?courseid='.$courseid.'&cat='.$pool->id.'%2C'.$pool->contextid));
+    }else{
+      $row[] = html_writer::tag('a', $questioncount, array('href'=>$CFG->wwwroot.'/question/edit.php?courseid='.$pool->courseid.'&cat='.$pool->id.'%2C'.$pool->contextid));
+    }
+    
+    
+    //Showing duplicate function for the each category
+    $duplicate_sql = '  SELECT id, COUNT(*) AS dup
+                          FROM {question}
+                         WHERE category = :catid
+                           AND hidden = 0
+                           AND name NOT LIKE "Random%"
+                      GROUP BY name
+                        HAVING COUNT(*) > 1
+                      ORDER BY dup DESC';
+                 $duplicates_exist = $DB->get_records_sql($duplicate_sql, array('catid' => $pool->id));
+                  
+    $duplicate_sql1 = 'SELECT q.id
+                          FROM {question} AS q
+                         WHERE q.category = :catid1
+                           AND q.hidden = 0
+                           AND q.name NOT LIKE "Random%"
+                           AND q.name LIKE "%:"
+                           AND q.id NOT IN (
+                        SELECT GROUP_CONCAT(id) 
+                          FROM {question}
+                         WHERE category = :catid2
+                           AND hidden = 0
+                           AND name NOT LIKE "Random%"
+                      GROUP BY name
+                        HAVING COUNT(*) > 1
+               )
+               ';
+    $duplicates = $DB->get_records_sql($duplicate_sql, array('catid' => $pool->id));
+    $duplicates1 = $DB->get_records_sql($duplicate_sql1, array('catid1' => $pool->id,'catid2' => $pool->id));
+    $duplicatedcount = 0;
+    if ($duplicates) {
+        $qcountrec = 0;
+        foreach ($duplicates as $dupvalue) {
+            $qcountrec += $dupvalue->dup;
+        }
+        $duplicatedcount = $qcountrec - count($duplicates);
+    }
+    $duplicatedcount = $duplicatedcount + count($duplicates1);
+    
+    $row[] = ($duplicatedcount) ? $duplicatedcount : 0;
+    
+    $row[] = html_writer::empty_tag('img', array('src'=>$src, 'alt'=>$title, 'title'=>$title));
+    $row[] =html_writer::tag('a', 'View', array('target'=>'_blank', 'href'=>$CFG->wwwroot.'/blocks/questionpool/stats.php?poolid='.$pool->id));
+    
+    if($is_manager){
+        
+        $row[] =  '<div class="createnewquestion">'.
+                        $questionpool->add_new_question_button($pool->id, $editquestionurl->params(),
+                                    get_string('add')).
+                        '</div>';
+        $row[] = html_writer::link(new moodle_url('/blocks/questionpool/questionpool.php', array('id'=>$pool->id, 'courseid'=>$courseid, 'edit' => $pool->id, 'sesskey' => sesskey())), html_writer::empty_tag('img', array('src' => $OUTPUT->image_url('t/edit'), 'title' => get_string('edit'), 'alt' => get_string('edit'), 'class' => 'iconsmall')))." ".
+                html_writer::link(new moodle_url('/blocks/questionpool/questionpool.php', array('id'=>$pool->id, 'delete' => $pool->id, 'sesskey' => sesskey())), html_writer::empty_tag('img', array('src' => $OUTPUT->image_url('t/delete'), 'title' => get_string('delete'), 'alt' => get_string('delete'), 'class' => 'iconsmall')), array('id' => 'questionpooldelconfirm' . $pool->id . ''))."".html_writer::link(new moodle_url('/blocks/questionpool/reports_question.php', array('poolid'=>$pool->id)), html_writer::empty_tag('img', array('src' => $OUTPUT->image_url('i/report'), 'title' => 'report', 'alt' => 'report', 'class' => 'iconsmall')));
+                
+        
+    }else if(has_capability('block/questionpool:access', $context) && !is_siteadmin() && $action == 'myownpool'){
+        //for instuctors
+        $row[] = '<div class="createnewquestion">'.
+                        $questionpool->add_new_question_button($pool->id, $editquestionurl->params(),
+                                    get_string('add')).
+                        '</div>';
+            $row[] = html_writer::link(new moodle_url('/blocks/questionpool/questionpool.php', array('id'=>$pool->id, 'courseid'=>$courseid, 'edit' => $pool->id, 'sesskey' => sesskey())), html_writer::empty_tag('img', array('src' => $OUTPUT->image_url('t/edit'), 'title' => get_string('edit'), 'alt' => get_string('edit'), 'class' => 'iconsmall')))." ".
+                    html_writer::link(new moodle_url('/blocks/questionpool/questionpool.php', array('id'=>$pool->id, 'delete' => $pool->id, 'sesskey' => sesskey())), html_writer::empty_tag('img', array('src' => $OUTPUT->image_url('t/delete'), 'title' => get_string('delete'), 'alt' => get_string('delete'), 'class' => 'iconsmall')), array('id' => 'questionpooldelconfirm' . $pool->id . ''))."".html_writer::link(new moodle_url('/blocks/questionpool/reports_question.php', array('poolid'=>$pool->id)), html_writer::empty_tag('img', array('src' => $OUTPUT->image_url('i/report'), 'title' => 'report', 'alt' => 'report', 'class' => 'iconsmall')));
+    }
+    $data[] = $row;
+}
+   
+$iTotal = $total_pools;
+$iFilteredTotal = $iTotal;
+$output = array(
+    "sEcho" => intval($requestData['sEcho']),
+    "iTotalRecords" => $iTotal,
+    "iTotalDisplayRecords" => $iFilteredTotal,
+    "aaData" => $data
+  );
+echo json_encode($output);
+
+    © 2018 GitHub, Inc.
+    Terms
+    Privacy
+    Security
+    Status
+    Help
+
+    Contact GitHub
+    Pricing
+    API
+    Training
+    Blog
+    About
+
+Press h to open a hovercard with more details.
